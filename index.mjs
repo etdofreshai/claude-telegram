@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, readFileSync } from "fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { execFileSync } from "child_process";
 import { dirname, join } from "path";
 import { homedir } from "os";
@@ -49,14 +49,17 @@ const env = {
   ...process.env,
 };
 
+const CLAUDE_DIR = join(homedir(), ".claude");
 const CLAUDE_EXE = env.CLAUDE_EXE || "claude";
 const CWD = env.CLAUDE_TELEGRAM_CWD || "C:\\Users\\etgarcia\\code\\workspace";
 const CLAUDE_RESUME_SESSION_ID = env.CLAUDE_RESUME_SESSION_ID || "";
 const DEBUG_LOG = env.CLAUDE_TELEGRAM_DEBUG_LOG || join(SCRIPT_DIR, "debug.log");
-const STATUSLINE_PS1 = env.STATUSLINE_PS1 || join(homedir(), ".claude", "statusline.ps1");
 const TELEGRAM_ALERT_CHAT_ID = env.TELEGRAM_ALERT_CHAT_ID || "";
 const TELEGRAM_STATE_DIR = env.TELEGRAM_STATE_DIR || join(SCRIPT_DIR, "channels", "telegram");
 const TELEGRAM_BOT_TOKEN = env.TELEGRAM_BOT_TOKEN || "";
+const CLAUDE_CREDENTIALS_FILE = join(CLAUDE_DIR, ".credentials.json");
+const USAGE_CACHE_FILE = join(CLAUDE_DIR, ".usage_cache.json");
+const USAGE_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
 
 const CLAUDE_MONITOR_INTERVAL_MS = 10000;
 const RATE_LIMIT_ALERT_COOLDOWN_MS = 10 * 60 * 1000;
@@ -77,6 +80,17 @@ let lastRateLimitAlertAt = 0;
 let claudeMonitorTimer = null;
 let monitorTimer = null;
 let lastInboundSignature = "";
+let usageRequestPromise = null;
+
+const ANSI = {
+  bold: "\u001b[1m",
+  orange: "\u001b[38;5;208m",
+  green: "\u001b[32m",
+  yellow: "\u001b[33m",
+  magenta: "\u001b[35m",
+  red: "\u001b[31m",
+  reset: "\u001b[0m",
+};
 
 function logDebug(data) {
   try {
@@ -88,6 +102,142 @@ function logDebug(data) {
 
 function stripAnsi(text) {
   return text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+}
+
+function readJsonFile(filePath) {
+  try {
+    return JSON.parse(readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function getUsageColor(percent) {
+  if (percent < 50) {
+    return ANSI.green;
+  }
+
+  if (percent < 75) {
+    return ANSI.yellow;
+  }
+
+  return ANSI.red;
+}
+
+function getGitBranch() {
+  try {
+    const branch = execFileSync("git", ["branch", "--show-current"], {
+      cwd: SCRIPT_DIR,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return branch || "no-git";
+  } catch {
+    return "no-git";
+  }
+}
+
+function getCachedUsage() {
+  const cached = readJsonFile(USAGE_CACHE_FILE);
+  if (!cached?.timestamp) {
+    return null;
+  }
+
+  const cachedAt = Date.parse(cached.timestamp);
+  if (Number.isNaN(cachedAt)) {
+    return null;
+  }
+
+  if (Date.now() - cachedAt >= USAGE_CACHE_MAX_AGE_MS) {
+    return null;
+  }
+
+  return cached;
+}
+
+function writeUsageCache(usage) {
+  const cacheData = {
+    timestamp: new Date().toISOString(),
+    five_hour: usage?.five_hour ?? null,
+    seven_day: usage?.seven_day ?? null,
+  };
+
+  try {
+    writeFileSync(USAGE_CACHE_FILE, JSON.stringify(cacheData, null, 2));
+  } catch {
+    // Cache writes are best-effort only.
+  }
+}
+
+async function fetchClaudeUsage() {
+  const cached = getCachedUsage();
+  if (cached) {
+    return cached;
+  }
+
+  const credentials = readJsonFile(CLAUDE_CREDENTIALS_FILE);
+  const token = credentials?.claudeAiOauth?.accessToken;
+  if (!token || !token.startsWith("sk-ant-oat")) {
+    return null;
+  }
+
+  try {
+    const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        "anthropic-beta": "oauth-2025-04-20",
+      },
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const usage = await response.json();
+    writeUsageCache(usage);
+    return getCachedUsage();
+  } catch {
+    return null;
+  }
+}
+
+async function getClaudeUsage() {
+  const cached = getCachedUsage();
+  if (cached) {
+    return cached;
+  }
+
+  if (!usageRequestPromise) {
+    usageRequestPromise = fetchClaudeUsage().finally(() => {
+      usageRequestPromise = null;
+    });
+  }
+
+  return usageRequestPromise;
+}
+
+function buildStatusLine({ modelId, contextUsed = 0, usage }) {
+  const contextPercent = Math.round(contextUsed);
+  const fiveHourPercent =
+    usage?.five_hour?.utilization != null ? Math.round(usage.five_hour.utilization) : null;
+  const sevenDayPercent =
+    usage?.seven_day?.utilization != null ? Math.round(usage.seven_day.utilization) : null;
+
+  let status = `${ANSI.bold}${ANSI.orange}[${modelId}]${ANSI.reset} ${ANSI.magenta}${getGitBranch()}${ANSI.reset}`;
+  status += ` | ${getUsageColor(contextPercent)}${contextPercent}% ctx${ANSI.reset}`;
+
+  if (fiveHourPercent !== null) {
+    status += ` | ${getUsageColor(fiveHourPercent)}${fiveHourPercent}% 5h${ANSI.reset}`;
+  }
+
+  if (sevenDayPercent !== null) {
+    status += ` | ${getUsageColor(sevenDayPercent)}${sevenDayPercent}% 7d${ANSI.reset}`;
+  }
+
+  return status;
 }
 
 function looksLikeRateLimit(text) {
@@ -203,43 +353,19 @@ function monitorClaude() {
   }
 }
 
-function getUsageStatus() {
-  const payload = JSON.stringify({
-    model: { id: "claude-telegram" },
-    context_window: { used_percentage: 0 },
+async function getUsageStatus() {
+  const usage = await getClaudeUsage();
+  const raw = buildStatusLine({
+    modelId: "claude-telegram",
+    contextUsed: 0,
+    usage,
   });
 
-  const output = execFileSync(
-    "powershell.exe",
-    [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-WindowStyle",
-      "Hidden",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-File",
-      STATUSLINE_PS1,
-    ],
-    {
-      input: payload,
-      encoding: "utf8",
-      env: childEnv,
-      windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    }
-  ).trim();
-
-  const plain = stripAnsi(output);
-  const fiveHourMatch = plain.match(/(\d+)%\s+5h/);
-  const sevenDayMatch = plain.match(/(\d+)%\s+7d/);
-
   return {
-    raw: output,
-    plain,
-    fiveHour: fiveHourMatch ? Number(fiveHourMatch[1]) : null,
-    sevenDay: sevenDayMatch ? Number(sevenDayMatch[1]) : null,
+    raw,
+    plain: stripAnsi(raw),
+    fiveHour: usage?.five_hour?.utilization != null ? Math.round(usage.five_hour.utilization) : null,
+    sevenDay: usage?.seven_day?.utilization != null ? Math.round(usage.seven_day.utilization) : null,
   };
 }
 
@@ -253,9 +379,9 @@ function maybeAlertCredit(percent, label) {
   void sendTelegramAlert(message);
 }
 
-function checkUsage({ print = false, sendAlerts = false } = {}) {
+async function checkUsage({ print = false, sendAlerts = false } = {}) {
   try {
-    const status = getUsageStatus();
+    const status = await getUsageStatus();
 
     if (print) {
       console.log(status.raw);
@@ -296,7 +422,7 @@ function trackIncomingTelegramRequests(data) {
   }
 
   lastInboundSignature = signature;
-  checkUsage({ sendAlerts: true });
+  void checkUsage({ sendAlerts: true });
 }
 
 function shutdown() {
@@ -328,10 +454,10 @@ function shutdown() {
 }
 
 function runMonitorMode() {
-  console.log("Monitoring Claude usage via statusline.ps1...");
-  checkUsage({ print: true });
+  console.log("Monitoring Claude usage via native Node API check...");
+  void checkUsage({ print: true });
   monitorTimer = setInterval(() => {
-    checkUsage({ print: true });
+    void checkUsage({ print: true });
   }, 60000);
 }
 

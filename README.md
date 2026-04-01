@@ -22,7 +22,7 @@ npm install
 
 4. Make sure Claude is installed and available at `CLAUDE_EXE` or on your `PATH`.
 
-5. Make sure your statusline script exists at `STATUSLINE_PS1` if you want usage monitoring.
+5. Make sure Claude Code is logged in locally so `~/.claude/.credentials.json` exists if you want usage monitoring.
 
 ## Environment
 
@@ -34,7 +34,6 @@ Supported settings:
 - `TELEGRAM_BOT_TOKEN`: Telegram bot token used for plugin access and alerts.
 - `TELEGRAM_ALERT_CHAT_ID`: Chat that receives rate-limit and out-of-credit warnings.
 - `TELEGRAM_STATE_DIR`: Telegram plugin state directory.
-- `STATUSLINE_PS1`: PowerShell script used to read Claude 5-hour and 7-day usage.
 - `CLAUDE_TELEGRAM_DEBUG_LOG`: Debug log path.
 
 The app reads config from:
@@ -88,11 +87,11 @@ pm2 logs claude-telegram
 
 ## Credit Warnings
 
-On each new incoming Telegram message, the runner calls `statusline.ps1` and parses the `5h` and `7d` usage values.
+On each new incoming Telegram message, the runner reads your Claude OAuth credentials from `~/.claude/.credentials.json`, calls the Anthropic OAuth usage API, and caches the result for 5 minutes in `~/.claude/.usage_cache.json`.
 
 If either usage is at `100%`, it sends a Telegram warning message back to the configured alert chat. This happens per incoming message, not on a background timer.
 
 ## Notes
 
 - `.env`, `channels/`, logs, and `node_modules/` are ignored by git.
-- The PowerShell usage check is launched hidden so it does not flash a console window for each message.
+- Usage monitoring no longer depends on `statusline.ps1`.
