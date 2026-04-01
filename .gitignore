@@ -1,0 +1,8 @@
+node_modules/
+channels/
+logs/
+.env
+debug.log
+output.log
+monitor.out
+monitor.err
