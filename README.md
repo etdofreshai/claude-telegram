@@ -21,6 +21,7 @@ npm install
 3. Make sure your Telegram plugin state exists under `channels/telegram/`.
 
 4. Make sure Claude is installed and available at `CLAUDE_EXE` or on your `PATH`.
+   The runner will try common Windows, macOS, and Linux install locations first, then fall back to `where.exe` or `which`.
 
 5. Make sure Claude Code is logged in locally so `~/.claude/.credentials.json` exists if you want usage monitoring.
 
@@ -28,13 +29,18 @@ npm install
 
 Supported settings:
 
-- `CLAUDE_EXE`: Claude executable path. Defaults to `claude`.
+- `CLAUDE_EXE`: Optional Claude executable path override.
 - `CLAUDE_TELEGRAM_CWD`: Working directory Claude should run in.
 - `CLAUDE_RESUME_SESSION_ID`: Optional session to resume before forking.
 - `TELEGRAM_BOT_TOKEN`: Telegram bot token used for plugin access and alerts.
 - `TELEGRAM_ALERT_CHAT_ID`: Chat that receives rate-limit and out-of-credit warnings.
 - `TELEGRAM_STATE_DIR`: Telegram plugin state directory.
 - `CLAUDE_TELEGRAM_DEBUG_LOG`: Debug log path.
+
+If `CLAUDE_EXE` is not set, the runner tries common locations such as:
+
+- Windows: `~/.local/bin/claude.exe`, Scoop shims, and command lookup via `where.exe`
+- macOS/Linux: `~/.local/bin/claude`, `/usr/local/bin/claude`, `/usr/bin/claude`, `/opt/homebrew/bin/claude`, and command lookup via `which`
 
 The app reads config from:
 
@@ -89,7 +95,7 @@ pm2 logs claude-telegram
 
 On each new incoming Telegram message, the runner reads your Claude OAuth credentials from `~/.claude/.credentials.json`, calls the Anthropic OAuth usage API, and caches the result for 5 minutes in `~/.claude/.usage_cache.json`.
 
-If either usage is at `100%`, it sends a Telegram warning message back to the configured alert chat. This happens per incoming message, not on a background timer.
+If either usage is at `100%`, it sends a Telegram warning message to `TELEGRAM_ALERT_CHAT_ID`. This happens per incoming message, not on a background timer.
 
 ## Notes
 
